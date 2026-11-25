@@ -1,0 +1,12 @@
+# Personal study / guide file (excluded from git)
+PROJECT_GUIDE.md
+
+# Dependencies & builds
+node_modules/
+dist/
+
+# Environment & local runtime data
+.env
+backend/.env
+backend/data/
+*.log

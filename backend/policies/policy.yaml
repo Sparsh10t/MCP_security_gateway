@@ -1,0 +1,50 @@
+version: 1
+defaults:
+  effect: deny
+
+roles:
+  support-agent:
+    allow:
+      - tool: demo.greet
+      - tool: jira.get_issue
+        constraints:
+          issueId:
+            matches: "^SUP-[0-9]+$"
+      - tool: jira.list_issues
+        constraints:
+          project:
+            in: ["SUP"]
+
+  dev-agent:
+    inherits: [support-agent]
+    allow:
+      - tool: jira.get_issue
+        constraints:
+          issueId:
+            matches: "^(SUP|PAY)-[0-9]+$"
+      - tool: jira.list_issues
+        constraints:
+          project:
+            in: ["SUP", "PAY"]
+      - tool: jira.add_comment
+        rate:
+          per_minute: 20
+        constraints:
+          issueId:
+            matches: "^(SUP|PAY)-[0-9]+$"
+          body:
+            max_length: 500
+
+  admin-agent:
+    allow:
+      - tool: "*"
+    require_approval:
+      - tool: jira.delete_issue
+
+response_filters:
+  default:
+    pii: mask
+    secrets: redact
+    injection: flag
+  jira.*:
+    injection: redact

@@ -1,0 +1,18 @@
+upstreams:
+  - name: demo
+    transport: stdio
+    command: npx
+    args:
+      - tsx
+      - src/mcp/demoServer.ts
+    riskTier: low
+    enabled: true
+
+  - name: jira
+    transport: stdio
+    command: npx
+    args:
+      - tsx
+      - src/mcp/jiraDemoServer.ts
+    riskTier: medium
+    enabled: true
