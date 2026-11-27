@@ -13,62 +13,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcp} -d ${POSTGRES_DB:-mcp_gateway}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mcp} -d ${POSTGRES_DB:-mcp_gateway}" ]
       interval: 5s
       timeout: 5s
       retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: mcp-gateway-redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  gateway:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mcp-gateway-server
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      PORT: 5000
-      NODE_ENV: production
-      UPSTREAM_CONFIG_PATH: ./config/upstreams.yaml
-      POLICY_PATH: ./policies/policy.yaml
-      JWT_SECRET: ${JWT_SECRET:-dev-only-mcp-sentinel-secret-change-me}
-      JWT_ISSUER: ${JWT_ISSUER:-mcp-sentinel-dev}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-mcp-security-gateway}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-mcp}:${POSTGRES_PASSWORD:-mcp_secret}@postgres:5432/${POSTGRES_DB:-mcp_gateway}
-      REDIS_URL: redis://redis:6379
-      REQUIRE_INFRA: "true"
-    ports:
-      - "${PORT:-5000}:5000"
-
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    container_name: mcp-gateway-dashboard
-    restart: unless-stopped
-    depends_on:
-      - gateway
-    ports:
-      - "${DASHBOARD_PORT:-5173}:80"
 
 volumes:
   postgres_data:
-  redis_data:

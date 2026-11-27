@@ -1,23 +1,30 @@
+/**
+ * RBAC policy engine — answers two questions:
+ *   1. Can this user SEE this tool? (tools/list)
+ *   2. Can this user CALL this tool with these args? (tools/call)
+ *
+ * Default is deny-everything. A user needs an explicit allow rule in their role.
+ *
+ * Tool patterns:
+ *   "*"        → matches all tools
+ *   "demo.*"   → all tools under the "demo" namespace
+ *   "demo.greet" → exact match only
+ */
+
 import type { Tool } from "@modelcontextprotocol/client";
 import type { Identity } from "../auth/identity.js";
 import { evaluateArgumentConstraints } from "./constraints.js";
 import type { LoadedPolicy, PolicyDecision } from "./types.js";
 
 export function matchToolPattern(pattern: string, toolName: string): boolean {
-  if (pattern === "*") {
-    return true;
-  }
+  if (pattern === "*") return true;
   if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -1); // keep trailing dot e.g. "jira."
+    const prefix = pattern.slice(0, -1); // "demo.*" → "demo."
     return toolName.startsWith(prefix);
   }
   return pattern === toolName;
 }
 
-/**
- * Evaluates deny-by-default RBAC policies for tool discovery (`tools/list`)
- * and tool execution (`tools/call`). Fails closed on any evaluation error.
- */
 export class PolicyEngine {
   private policy: LoadedPolicy;
 
@@ -62,7 +69,7 @@ export class PolicyEngine {
       }
       return this.policy.document.defaults.effect === "allow";
     } catch {
-      return false;
+      return false; // fail closed
     }
   }
 
@@ -76,6 +83,7 @@ export class PolicyEngine {
     args?: Record<string, unknown>
   ): PolicyDecision {
     try {
+      // Step 1: check require_approval before anything else
       for (const roleName of identity.roles) {
         const role = this.policy.resolvedRoles.get(roleName);
         if (!role) continue;
@@ -95,6 +103,7 @@ export class PolicyEngine {
         }
       }
 
+      // Step 2: collect all allow rules that match this tool
       const matchingRules: Array<{
         roleName: string;
         pattern: string;
@@ -111,12 +120,8 @@ export class PolicyEngine {
             matchingRules.push({
               roleName,
               pattern: rule.tool,
-              ...(rule.constraints !== undefined
-                ? { constraints: rule.constraints }
-                : {}),
-              ...(rule.rate?.per_minute !== undefined
-                ? { ratePerMinute: rule.rate.per_minute }
-                : {}),
+              ...(rule.constraints !== undefined ? { constraints: rule.constraints } : {}),
+              ...(rule.rate?.per_minute !== undefined ? { ratePerMinute: rule.rate.per_minute } : {}),
             });
           }
         }
@@ -124,12 +129,7 @@ export class PolicyEngine {
 
       if (matchingRules.length === 0) {
         if (this.policy.document.defaults.effect === "allow") {
-          return {
-            allowed: true,
-            effect: "allow",
-            reasonCode: "ALLOWED",
-            reason: "Allowed by default policy",
-          };
+          return { allowed: true, effect: "allow", reasonCode: "ALLOWED", reason: "Allowed by default policy" };
         }
         return {
           allowed: false,
@@ -139,6 +139,7 @@ export class PolicyEngine {
         };
       }
 
+      // Step 3: check argument constraints for each matching rule
       const constraintFailures: string[] = [];
 
       for (const candidate of matchingRules) {
@@ -151,24 +152,19 @@ export class PolicyEngine {
             reason: `Allowed by role "${candidate.roleName}" (${candidate.pattern})`,
             matchedRole: candidate.roleName,
             matchedPattern: candidate.pattern,
-            ...(candidate.ratePerMinute !== undefined
-              ? { rateLimitPerMinute: candidate.ratePerMinute }
-              : {}),
+            ...(candidate.ratePerMinute !== undefined ? { rateLimitPerMinute: candidate.ratePerMinute } : {}),
           };
         }
-        if (check.reason) {
-          constraintFailures.push(`${candidate.roleName}: ${check.reason}`);
-        }
+        if (check.reason) constraintFailures.push(`${candidate.roleName}: ${check.reason}`);
       }
 
       return {
         allowed: false,
         effect: "deny",
         reasonCode: "ARG_CONSTRAINT_VIOLATION",
-        reason:
-          constraintFailures.join("; ") ||
-          `Arguments violated policy constraints for "${toolName}"`,
+        reason: constraintFailures.join("; ") || `Arguments violated policy constraints for "${toolName}"`,
       };
+
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return {

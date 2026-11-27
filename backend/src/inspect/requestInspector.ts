@@ -1,3 +1,13 @@
+/**
+ * Scans tool call arguments BEFORE forwarding them upstream.
+ *
+ * We check for two things:
+ *   1. Embedded secrets — API keys/tokens hardcoded in arguments
+ *   2. Prompt injection — hidden instructions like "Ignore all rules and..."
+ *
+ * Two layers: fast regex (always runs) + Gemini LLM (catches subtle attacks).
+ */
+
 import type { AuditFinding } from "../audit/types.js";
 import {
   analyzePromptInjectionWithGemini,
@@ -13,6 +23,12 @@ export interface RequestInspectionResult {
   findings: AuditFinding[];
 }
 
+/**
+ * Recursively collect all string values from a nested args object.
+ * Tracks the "path" to each string so error messages are descriptive.
+ *
+ * Example: { user: { name: "Aarav" } } → [{ arg: "user.name", text: "Aarav" }]
+ */
 function collectStrings(
   value: unknown,
   argPath: string,
@@ -33,15 +49,11 @@ function collectStrings(
   }
 }
 
-/**
- * Synchronous scan of outbound tool call arguments for embedded secrets.
- */
+// Synchronous check — regex only, no API call. Used as the first fast check.
 export function inspectToolArguments(
   args?: Record<string, unknown>
 ): RequestInspectionResult {
-  if (!args) {
-    return { passed: true, findings: [] };
-  }
+  if (!args) return { passed: true, findings: [] };
 
   const strings: Array<{ arg: string; text: string }> = [];
   for (const [key, value] of Object.entries(args)) {
@@ -50,6 +62,7 @@ export function inspectToolArguments(
 
   const findings: AuditFinding[] = [];
   const hitSummary: string[] = [];
+
   for (const item of strings) {
     for (const f of detectSecrets(item.text)) {
       hitSummary.push(`${item.arg} (${f.rule})`);
@@ -75,23 +88,17 @@ export function inspectToolArguments(
   return { passed: true, findings: [] };
 }
 
-/**
- * Inspects incoming tool arguments for both embedded secrets AND prompt injection
- * (deterministic regex + Gemini LLM analysis).
- */
+// Full check — regex first, then Gemini LLM for injection detection.
 export async function inspectToolArgumentsWithGemini(
   toolName: string,
   args?: Record<string, unknown>,
   geminiOptions?: Omit<AnalyzeOptions, "toolName">
 ): Promise<RequestInspectionResult> {
+  // Fast path: check secrets first (no API call needed)
   const secretCheck = inspectToolArguments(args);
-  if (!secretCheck.passed) {
-    return secretCheck;
-  }
+  if (!secretCheck.passed) return secretCheck;
 
-  if (!args) {
-    return { passed: true, findings: [] };
-  }
+  if (!args) return { passed: true, findings: [] };
 
   const strings: Array<{ arg: string; text: string }> = [];
   for (const [key, value] of Object.entries(args)) {
@@ -99,11 +106,11 @@ export async function inspectToolArgumentsWithGemini(
   }
 
   const combinedText = strings.map((s) => `${s.arg}: ${s.text}`).join("\n");
-  if (combinedText.trim().length < 12) {
-    return { passed: true, findings: [] };
-  }
+  if (combinedText.trim().length < 12) return { passed: true, findings: [] };
 
   const findings: AuditFinding[] = [];
+
+  // Layer 1: regex injection scan
   const regexScan = detectPromptInjection(combinedText);
   for (const m of regexScan.matches) {
     findings.push({
@@ -115,6 +122,7 @@ export async function inspectToolArgumentsWithGemini(
     });
   }
 
+  // Layer 2: Gemini LLM analysis
   const geminiOutcome = await analyzePromptInjectionWithGemini(combinedText, {
     toolName: `${toolName}:args`,
     ...geminiOptions,
@@ -147,6 +155,7 @@ export async function inspectToolArgumentsWithGemini(
       };
     }
   } else {
+    // Gemini unavailable — log it and fall back to regex result
     findings.push({
       detector: "gemini",
       analyzer: "gemini",
@@ -156,9 +165,7 @@ export async function inspectToolArgumentsWithGemini(
       detail: geminiOutcome.status,
       analysisStatus: geminiOutcome.status,
       injectionDetected: null,
-      ...(geminiOutcome.errorMessage !== undefined
-        ? { reason: geminiOutcome.errorMessage }
-        : {}),
+      ...(geminiOutcome.errorMessage !== undefined ? { reason: geminiOutcome.errorMessage } : {}),
     });
   }
 

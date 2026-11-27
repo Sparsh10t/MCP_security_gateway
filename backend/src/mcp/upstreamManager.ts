@@ -1,3 +1,15 @@
+/**
+ * Manages connections to upstream MCP servers and routes tool calls to the right one.
+ *
+ * Gateway sits between the AI agent and the real MCP servers:
+ *   AI Agent → [MCP Gateway] → Demo Server  (tools: greet, echo)
+ *                            → Jira Server   (tools: search, createIssue)
+ *
+ * Tools get namespaced to avoid collisions:
+ *   "greet" on Demo server → registered as "demo.greet"
+ *   "search" on Jira server → registered as "jira.search"
+ */
+
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -7,12 +19,11 @@ import {
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { env } from "../config/env.js";
 import type { UpstreamServerConfig } from "../config/upstreams.js";
-import { cacheToolCatalog } from "../services/redis.js";
 
 export interface RegisteredToolEntry {
-  namespacedName: string;
-  upstreamName: string;
-  originalName: string;
+  namespacedName: string; // e.g. "demo.greet"
+  upstreamName: string;   // e.g. "demo"
+  originalName: string;   // e.g. "greet" (what the upstream expects)
   tool: Tool;
 }
 
@@ -35,10 +46,6 @@ interface UpstreamConnection {
   error?: string;
 }
 
-/**
- * Manages connections to multiple upstream MCP servers, merges and namespaces
- * their tools (`<server>.<tool>`), and routes `tools/call` invocations.
- */
 export class UpstreamManager {
   private readonly connections = new Map<string, UpstreamConnection>();
   private readonly toolRegistry = new Map<string, RegisteredToolEntry>();
@@ -48,15 +55,9 @@ export class UpstreamManager {
 
     for (const config of configs) {
       if (!config.enabled) {
-        this.connections.set(config.name, {
-          config,
-          client: null,
-          connected: false,
-          tools: [],
-        });
+        this.connections.set(config.name, { config, client: null, connected: false, tools: [] });
         continue;
       }
-
       await this.connectUpstream(config);
     }
 
@@ -64,56 +65,36 @@ export class UpstreamManager {
   }
 
   private async connectUpstream(config: UpstreamServerConfig): Promise<void> {
-    const client = new Client({
-      name: `mcp-gateway-upstream-${config.name}`,
-      version: "1.0.0",
-    });
+    const client = new Client({ name: `mcp-gateway-upstream-${config.name}`, version: "1.0.0" });
 
     try {
       const transport = this.createTransport(config);
       await client.connect(transport);
       const result = await client.listTools();
 
-      this.connections.set(config.name, {
-        config,
-        client,
-        connected: true,
-        tools: result.tools,
-      });
-
-      console.log(
-        `[upstream:${config.name}] connected (${config.transport}) - ${result.tools.length} tools`
-      );
+      this.connections.set(config.name, { config, client, connected: true, tools: result.tools });
+      console.log(`[upstream:${config.name}] connected (${config.transport}) - ${result.tools.length} tools`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.connections.set(config.name, {
-        config,
-        client: null,
-        connected: false,
-        tools: [],
-        error: message,
-      });
-      await client.close().catch(() => {});
+      this.connections.set(config.name, { config, client: null, connected: false, tools: [], error: message });
+      await client.close().catch(() => { });
       console.error(`[upstream:${config.name}] connection failed:`, message);
     }
   }
 
   private createTransport(config: UpstreamServerConfig) {
     if (config.transport === "stdio") {
+      // stdio: gateway launches the upstream as a child process
       return new StdioClientTransport({
         command: config.command,
         args: config.args,
         ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
-        ...(config.env !== undefined
-          ? { env: { ...process.env, ...config.env } as Record<string, string> }
-          : {}),
+        ...(config.env !== undefined ? { env: { ...process.env, ...config.env } as Record<string, string> } : {}),
       });
     }
-
+    // http: connect to a remote URL
     return new StreamableHTTPClientTransport(new URL(config.url), {
-      ...(config.headers !== undefined
-        ? { requestInit: { headers: config.headers } }
-        : {}),
+      ...(config.headers !== undefined ? { requestInit: { headers: config.headers } } : {}),
     });
   }
 
@@ -125,34 +106,29 @@ export class UpstreamManager {
 
       for (const tool of conn.tools) {
         const namespacedName = `${upstreamName}.${tool.name}`;
-        if (this.toolRegistry.has(namespacedName)) {
-          throw new Error(
-            `Tool namespace collision detected for "${namespacedName}"`
-          );
-        }
 
-        const namespacedTool: Tool = {
-          ...tool,
-          name: namespacedName,
-          description: tool.description
-            ? `[${upstreamName}] ${tool.description}`
-            : `[${upstreamName}] ${tool.name}`,
-        };
+        if (this.toolRegistry.has(namespacedName)) {
+          throw new Error(`Tool namespace collision detected for "${namespacedName}"`);
+        }
 
         this.toolRegistry.set(namespacedName, {
           namespacedName,
           upstreamName,
           originalName: tool.name,
-          tool: namespacedTool,
+          tool: {
+            ...tool,
+            name: namespacedName,
+            description: tool.description
+              ? `[${upstreamName}] ${tool.description}`
+              : `[${upstreamName}] ${tool.name}`,
+          },
         });
       }
     }
-
-    await cacheToolCatalog(this.listTools());
   }
 
   listTools(): Tool[] {
-    return Array.from(this.toolRegistry.values()).map((entry) => entry.tool);
+    return Array.from(this.toolRegistry.values()).map((e) => e.tool);
   }
 
   getToolEntry(namespacedName: string): RegisteredToolEntry | undefined {
@@ -164,20 +140,14 @@ export class UpstreamManager {
     args?: Record<string, unknown>
   ): Promise<{ result: CallToolResult; entry: RegisteredToolEntry }> {
     const entry = this.toolRegistry.get(namespacedName);
-    if (!entry) {
-      throw new UnknownToolError(namespacedName);
-    }
+    if (!entry) throw new UnknownToolError(namespacedName);
 
     const conn = this.connections.get(entry.upstreamName);
-    if (!conn || !conn.connected || !conn.client) {
-      throw new UpstreamUnavailableError(entry.upstreamName);
-    }
+    if (!conn || !conn.connected || !conn.client) throw new UpstreamUnavailableError(entry.upstreamName);
 
+    // Call with the original (un-namespaced) tool name
     const result = await conn.client.callTool(
-      {
-        name: entry.originalName,
-        ...(args !== undefined ? { arguments: args } : {}),
-      },
+      { name: entry.originalName, ...(args !== undefined ? { arguments: args } : {}) },
       { timeout: env.UPSTREAM_CALL_TIMEOUT_MS }
     );
 
@@ -199,9 +169,7 @@ export class UpstreamManager {
 
   async closeAll(): Promise<void> {
     for (const conn of this.connections.values()) {
-      if (conn.client) {
-        await conn.client.close().catch(() => {});
-      }
+      if (conn.client) await conn.client.close().catch(() => { });
     }
     this.connections.clear();
     this.toolRegistry.clear();

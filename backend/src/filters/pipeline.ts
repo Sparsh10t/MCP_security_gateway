@@ -1,11 +1,24 @@
+/**
+ * Response filter pipeline — scans tool output before returning it to the AI agent.
+ *
+ * Checks in order:
+ *   1. Secrets  — API keys, tokens, passwords
+ *   2. PII      — emails, phone numbers, Aadhaar numbers
+ *   3. Injection — hidden instructions trying to hijack the AI
+ *
+ * Each check has an action: "off" | "flag" | "redact"/"mask" | "block"
+ * Actions come from the policy file (response_filters section).
+ *
+ * Two exported functions:
+ *   applyResponseFilters()           — sync, regex only
+ *   applyResponseFiltersWithGemini() — async, regex + Gemini LLM
+ */
+
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import type { AuditFinding } from "../audit/types.js";
 import type { ResponseFilterRule } from "../policy/types.js";
 import { detectPromptInjection, redactPromptInjection } from "./injection.js";
-import {
-  analyzePromptInjectionWithGemini,
-  type AnalyzeOptions,
-} from "./geminiAnalyzer.js";
+import { analyzePromptInjectionWithGemini, type AnalyzeOptions } from "./geminiAnalyzer.js";
 import { detectPii, maskPii } from "./pii.js";
 import { detectSecrets, redactSecrets } from "./secrets.js";
 
@@ -23,13 +36,16 @@ const DEFAULT_FILTER_RULE: Required<ResponseFilterRule> = {
   injection: "flag",
 };
 
+/**
+ * Resolves which filter rule applies to a tool.
+ * More specific rules override less specific ones:
+ *   exact tool name > namespace wildcard (e.g. "demo.*") > "default"
+ */
 export function resolveResponseFilterRule(
   toolName: string,
   responseFilters?: Record<string, ResponseFilterRule>
 ): Required<ResponseFilterRule> {
-  if (!responseFilters) {
-    return { ...DEFAULT_FILTER_RULE };
-  }
+  if (!responseFilters) return { ...DEFAULT_FILTER_RULE };
 
   const base = responseFilters["default"] ?? {};
   const prefix = toolName.includes(".") ? `${toolName.split(".")[0]}.*` : "";
@@ -38,19 +54,12 @@ export function resolveResponseFilterRule(
 
   return {
     pii: exactMatch.pii ?? wildcardMatch.pii ?? base.pii ?? DEFAULT_FILTER_RULE.pii,
-    secrets:
-      exactMatch.secrets ??
-      wildcardMatch.secrets ??
-      base.secrets ??
-      DEFAULT_FILTER_RULE.secrets,
-    injection:
-      exactMatch.injection ??
-      wildcardMatch.injection ??
-      base.injection ??
-      DEFAULT_FILTER_RULE.injection,
+    secrets: exactMatch.secrets ?? wildcardMatch.secrets ?? base.secrets ?? DEFAULT_FILTER_RULE.secrets,
+    injection: exactMatch.injection ?? wildcardMatch.injection ?? base.injection ?? DEFAULT_FILTER_RULE.injection,
   };
 }
 
+// Synchronous filter — regex only, no Gemini
 export function applyResponseFilters(
   toolName: string,
   result: CallToolResult,
@@ -63,13 +72,11 @@ export function applyResponseFilters(
   let blockReason: string | undefined;
 
   const updatedContent = result.content.map((block) => {
-    if (block.type !== "text") {
-      return block;
-    }
+    if (block.type !== "text") return block;
 
     let text = block.text;
 
-    // 1. Secrets
+    // --- Check 1: Secrets ---
     if (rule.secrets !== "off") {
       if (rule.secrets === "block") {
         const secretHits = detectSecrets(text);
@@ -77,13 +84,7 @@ export function applyResponseFilters(
           blocked = true;
           blockReason = `Response blocked: secret detected (${secretHits.map((s) => s.rule).join(", ")})`;
           for (const s of secretHits) {
-            findings.push({
-              detector: "secrets.v1",
-              category: "secret",
-              severity: s.severity,
-              action: "block",
-              detail: s.rule,
-            });
+            findings.push({ detector: "secrets.v1", category: "secret", severity: s.severity, action: "block", detail: s.rule });
           }
         }
       } else if (rule.secrets === "redact") {
@@ -92,30 +93,17 @@ export function applyResponseFilters(
           redacted = true;
           text = res.text;
           for (const s of res.findings) {
-            findings.push({
-              detector: "secrets.v1",
-              category: "secret",
-              severity: s.severity,
-              action: "redact",
-              detail: s.rule,
-            });
+            findings.push({ detector: "secrets.v1", category: "secret", severity: s.severity, action: "redact", detail: s.rule });
           }
         }
       } else {
-        const secretHits = detectSecrets(text);
-        for (const s of secretHits) {
-          findings.push({
-            detector: "secrets.v1",
-            category: "secret",
-            severity: s.severity,
-            action: "flag",
-            detail: s.rule,
-          });
+        for (const s of detectSecrets(text)) {
+          findings.push({ detector: "secrets.v1", category: "secret", severity: s.severity, action: "flag", detail: s.rule });
         }
       }
     }
 
-    // 2. PII
+    // --- Check 2: PII ---
     if (!blocked && rule.pii !== "off") {
       if (rule.pii === "mask") {
         const res = maskPii(text);
@@ -123,30 +111,17 @@ export function applyResponseFilters(
           redacted = true;
           text = res.text;
           for (const p of res.findings) {
-            findings.push({
-              detector: "pii.v1",
-              category: "pii",
-              severity: "medium",
-              action: "mask",
-              detail: `${p.kind} (${p.count})`,
-            });
+            findings.push({ detector: "pii.v1", category: "pii", severity: "medium", action: "mask", detail: `${p.kind} (${p.count})` });
           }
         }
       } else {
-        const piiHits = detectPii(text);
-        for (const p of piiHits) {
-          findings.push({
-            detector: "pii.v1",
-            category: "pii",
-            severity: "medium",
-            action: "flag",
-            detail: `${p.kind} (${p.count})`,
-          });
+        for (const p of detectPii(text)) {
+          findings.push({ detector: "pii.v1", category: "pii", severity: "medium", action: "flag", detail: `${p.kind} (${p.count})` });
         }
       }
     }
 
-    // 3. Prompt injection heuristics
+    // --- Check 3: Prompt injection (regex heuristics) ---
     if (!blocked && rule.injection !== "off") {
       if (rule.injection === "block") {
         const scan = detectPromptInjection(text);
@@ -154,13 +129,7 @@ export function applyResponseFilters(
           blocked = true;
           blockReason = `Response blocked: suspected prompt injection (${scan.matches.map((m) => m.pattern).join(", ")})`;
           for (const m of scan.matches) {
-            findings.push({
-              detector: "injection.v1",
-              category: "prompt_injection",
-              severity: "high",
-              action: "block",
-              detail: `${m.pattern}:${m.score}`,
-            });
+            findings.push({ detector: "injection.v1", category: "prompt_injection", severity: "high", action: "block", detail: `${m.pattern}:${m.score}` });
           }
         }
       } else if (rule.injection === "redact") {
@@ -169,25 +138,12 @@ export function applyResponseFilters(
           redacted = true;
           text = res.text;
           for (const m of res.scan.matches) {
-            findings.push({
-              detector: "injection.v1",
-              category: "prompt_injection",
-              severity: "high",
-              action: "redact",
-              detail: `${m.pattern}:${m.score}`,
-            });
+            findings.push({ detector: "injection.v1", category: "prompt_injection", severity: "high", action: "redact", detail: `${m.pattern}:${m.score}` });
           }
         }
       } else {
-        const scan = detectPromptInjection(text);
-        for (const m of scan.matches) {
-          findings.push({
-            detector: "injection.v1",
-            category: "prompt_injection",
-            severity: "high",
-            action: "flag",
-            detail: `${m.pattern}:${m.score}`,
-          });
+        for (const m of detectPromptInjection(text).matches) {
+          findings.push({ detector: "injection.v1", category: "prompt_injection", severity: "high", action: "flag", detail: `${m.pattern}:${m.score}` });
         }
       }
     }
@@ -202,32 +158,25 @@ export function applyResponseFilters(
       redacted: false,
       result: {
         isError: true,
-        content: [
-          {
-            type: "text",
-            text: blockReason ?? "Response blocked by gateway security policy.",
-          },
-        ],
+        content: [{ type: "text", text: blockReason ?? "Response blocked by gateway security policy." }],
       },
       findings,
     };
   }
 
-  return {
-    blocked: false,
-    redacted,
-    result: {
-      ...result,
-      content: updatedContent,
-    },
-    findings,
-  };
+  return { blocked: false, redacted, result: { ...result, content: updatedContent }, findings };
 }
 
 /**
- * Redacts secrets and PII before sending tool output to Gemini. Gemini and the
- * deterministic injection detector then inspect that same text, so heuristic
- * redaction cannot hide injection evidence from Gemini.
+ * Async filter pipeline — same as above but also uses Gemini for injection detection.
+ *
+ * Strategy:
+ *   1. Run secrets + PII filters first (without injection) — sanitizes the text
+ *   2. Run regex injection detector as an independent fallback
+ *   3. Send the sanitized text to Gemini (we don't send raw secrets to Gemini's API)
+ *   4. Combine all findings and apply the configured action
+ *
+ * Redacts secrets/PII before Gemini so we don't send real credentials to a cloud API.
  */
 export async function applyResponseFiltersWithGemini(
   toolName: string,
@@ -241,25 +190,23 @@ export async function applyResponseFiltersWithGemini(
     return applyResponseFilters(toolName, result, responseFilters);
   }
 
-  // First sanitize secrets and PII, but leave injection text intact for Gemini.
+  // Step 1: secrets + PII only (injection="off" here, handled separately below)
   const sanitized = applyResponseFilters(toolName, result, {
     [toolName]: { ...rule, injection: "off" },
   });
-
   if (sanitized.blocked) return sanitized;
 
   const textBlocks = sanitized.result.content
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text);
 
-  if (textBlocks.length === 0) {
-    return sanitized;
-  }
+  if (textBlocks.length === 0) return sanitized;
 
-  // Keep the regex detector as a fallback and as an independent safety layer.
+  // Step 2: regex injection detector as fallback
   const deterministic = applyResponseFilters(toolName, sanitized.result, {
     [toolName]: { pii: "off", secrets: "off", injection: rule.injection },
   });
+
   const findings = [...sanitized.findings, ...deterministic.findings];
   const base: FilterPipelineResult = {
     ...deterministic,
@@ -267,13 +214,12 @@ export async function applyResponseFiltersWithGemini(
     findings,
   };
 
+  // Step 3: Gemini LLM injection analysis
   const combinedText = textBlocks.join("\n\n");
-  const outcome = await analyzePromptInjectionWithGemini(combinedText, {
-    toolName,
-    ...geminiOptions,
-  });
+  const outcome = await analyzePromptInjectionWithGemini(combinedText, { toolName, ...geminiOptions });
 
   if (outcome.status !== "completed" || !outcome.analysis) {
+    // Gemini unavailable — record it and use regex result
     base.findings.push({
       detector: "gemini",
       analyzer: "gemini",
@@ -283,22 +229,19 @@ export async function applyResponseFiltersWithGemini(
       detail: outcome.status,
       analysisStatus: outcome.status,
       injectionDetected: null,
-      ...(outcome.errorMessage !== undefined
-        ? { reason: outcome.errorMessage }
-        : {}),
+      ...(outcome.errorMessage !== undefined ? { reason: outcome.errorMessage } : {}),
     });
     return base;
   }
 
   const analysis = outcome.analysis;
-  const effectiveAction = analysis.isInjection ? rule.injection : "allow";
 
-  const geminiFinding: AuditFinding = {
+  base.findings.push({
     detector: "gemini",
     analyzer: "gemini",
     category: "prompt_injection",
     severity: analysis.riskLevel,
-    action: effectiveAction,
+    action: analysis.isInjection ? rule.injection : "allow",
     detail: `${analysis.riskLevel}:${analysis.confidence.toFixed(2)}`,
     analysisStatus: outcome.status,
     injectionDetected: analysis.isInjection,
@@ -307,32 +250,20 @@ export async function applyResponseFiltersWithGemini(
     reason: analysis.reason,
     evidence: analysis.evidence,
     recommendedAction: analysis.recommendedAction,
-  };
-  base.findings.push(geminiFinding);
+  });
 
-  if (!analysis.isInjection && !base.blocked) {
-    return base;
-  }
+  if (!analysis.isInjection && !base.blocked) return base;
+  if (base.blocked) return base;
+  if (deterministic.blocked || deterministic.redacted || rule.injection === "flag") return base;
 
-  if (base.blocked) {
-    return base;
-  }
-
-  // The deterministic detector may already have applied the configured action.
-  if (deterministic.blocked || deterministic.redacted || rule.injection === "flag") {
-    return base;
-  }
-
+  // Step 4: apply Gemini's decision
   if (rule.injection === "block") {
     const blockReason = `Response blocked by Gemini analysis: ${analysis.reason}`;
     return {
       blocked: true,
       blockReason,
       redacted: false,
-      result: {
-        isError: true,
-        content: [{ type: "text", text: blockReason }],
-      },
+      result: { isError: true, content: [{ type: "text", text: blockReason }] },
       findings: base.findings,
     };
   }
@@ -344,10 +275,7 @@ export async function applyResponseFiltersWithGemini(
       let updatedText = block.text;
       for (const snippet of analysis.evidence) {
         if (snippet && updatedText.includes(snippet)) {
-          updatedText = updatedText.replaceAll(
-            snippet,
-            "[REDACTED: suspected injection]"
-          );
+          updatedText = updatedText.replaceAll(snippet, "[REDACTED: suspected injection]");
           anyRedacted = true;
         }
       }
@@ -361,10 +289,7 @@ export async function applyResponseFiltersWithGemini(
     return {
       blocked: false,
       redacted: anyRedacted,
-      result: {
-        ...base.result,
-        content: updatedContent,
-      },
+      result: { ...base.result, content: updatedContent },
       findings: base.findings,
     };
   }

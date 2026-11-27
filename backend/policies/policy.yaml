@@ -6,6 +6,8 @@ roles:
   support-agent:
     allow:
       - tool: demo.greet
+        rate:
+          per_minute: 5
       - tool: jira.get_issue
         constraints:
           issueId:

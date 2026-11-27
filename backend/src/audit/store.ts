@@ -1,3 +1,11 @@
+/**
+ * Two audit stores — same interface, different backends:
+ *   PostgresAuditStore → saves to DB (used when Docker is running)
+ *   FileAuditStore     → saves to a .log file (fallback if DB not available)
+ *
+ * server.ts picks whichever one works at startup.
+ */
+
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Pool } from "pg";
@@ -12,12 +20,11 @@ import type {
 export interface AuditStore {
   getLatestHash(): Promise<string>;
   append(record: AuditEventRecord): Promise<void>;
-  query(
-    filter: AuditQueryFilter
-  ): Promise<{ events: AuditEventRecord[]; total: number }>;
+  query(filter: AuditQueryFilter): Promise<{ events: AuditEventRecord[]; total: number }>;
   getAllChronological(): Promise<AuditEventRecord[]>;
 }
 
+// Postgres returns snake_case columns; our code uses camelCase — this maps between them
 interface PgAuditRow {
   seq: string | number;
   id: string;
@@ -56,8 +63,10 @@ function mapPgRow(row: PgAuditRow): AuditEventRecord {
   };
 }
 
+// --- Store 1: PostgreSQL ---
+
 export class PostgresAuditStore implements AuditStore {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Pool) { }
 
   async getLatestHash(): Promise<string> {
     const res = await this.pool.query<{ hash: string }>(
@@ -67,6 +76,7 @@ export class PostgresAuditStore implements AuditStore {
   }
 
   async append(record: AuditEventRecord): Promise<void> {
+    // $1, $2, ... are parameterized placeholders — prevents SQL injection
     await this.pool.query(
       `INSERT INTO audit_events (
         id, ts, trace_id, user_id, roles, tool, args_redacted, args_hash,
@@ -97,6 +107,7 @@ export class PostgresAuditStore implements AuditStore {
   async query(
     filter: AuditQueryFilter
   ): Promise<{ events: AuditEventRecord[]; total: number }> {
+    // Build the WHERE clause dynamically based on which filters are provided
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -156,6 +167,8 @@ export class PostgresAuditStore implements AuditStore {
   }
 }
 
+// --- Store 2: Plain log file (one JSON object per line) ---
+
 export class FileAuditStore implements AuditStore {
   private readonly filePath: string;
 
@@ -174,16 +187,14 @@ export class FileAuditStore implements AuditStore {
       }
       return records;
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return [];
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return []; // file not created yet
       throw err;
     }
   }
 
   async getLatestHash(): Promise<string> {
     const all = await this.readAllLines();
-    const last = all[all.length - 1];
-    return last?.hash ?? GENESIS_HASH;
+    return all[all.length - 1]?.hash ?? GENESIS_HASH;
   }
 
   async append(record: AuditEventRecord): Promise<void> {
@@ -195,12 +206,13 @@ export class FileAuditStore implements AuditStore {
     filter: AuditQueryFilter
   ): Promise<{ events: AuditEventRecord[]; total: number }> {
     const all = await this.readAllLines();
+    // Filter in memory (like SQL WHERE, but in JS)
     const filtered = all
       .filter((ev) => !filter.userId || ev.userId === filter.userId)
       .filter((ev) => !filter.tool || ev.tool === filter.tool)
       .filter((ev) => !filter.decision || ev.decision === filter.decision)
       .filter((ev) => !filter.reasonCode || ev.reasonCode === filter.reasonCode)
-      .reverse();
+      .reverse(); // newest first
 
     const limit = Math.min(Math.max(filter.limit ?? 50, 1), 500);
     const offset = Math.max(filter.offset ?? 0, 0);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -55,7 +55,7 @@ interface AuditStats {
 
 interface HealthResponse {
   status: string;
-  infra: { postgres: string; redis: string };
+  infra: { postgres: string };
   upstreams: { total: number; connected: number; tools: number };
 }
 
@@ -117,7 +117,7 @@ export default function App() {
   const [policy, setPolicy] = useState<PolicySummary | null>(null);
   const [upstreams, setUpstreams] = useState<UpstreamInfo[]>([]);
   const [verification, setVerification] = useState<VerifyResponse | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
 
   const [decisionFilter, setDecisionFilter] = useState("");
   const [toolFilter, setToolFilter] = useState("");
@@ -249,8 +249,8 @@ export default function App() {
             </span>
             <span
               className={`rounded-full border px-3 py-1 ${health?.infra.postgres === "connected"
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                  : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-300"
                 }`}
             >
               Postgres: {health?.infra.postgres ?? "unknown"}
@@ -349,8 +349,8 @@ export default function App() {
                 key={key}
                 onClick={() => setTab(key)}
                 className={`rounded-lg px-4 py-2 text-sm font-medium transition ${tab === key
-                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                  : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                   }`}
               >
                 {label}
@@ -386,8 +386,8 @@ export default function App() {
         {verification && (
           <div
             className={`rounded-xl border p-4 text-sm ${verification.valid
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                : "border-rose-500/40 bg-rose-500/10 text-rose-200"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-200"
               }`}
           >
             {verification.valid ? (
@@ -458,124 +458,148 @@ export default function App() {
                       </td>
                     </tr>
                   ) : (
-                    events.map((ev) => (
-                      <tr
-                        key={ev.id}
-                        onClick={() => setSelectedEvent(ev)}
-                        className="cursor-pointer hover:bg-slate-800/50"
-                      >
-                        <td className="whitespace-nowrap px-4 py-2.5 text-xs text-slate-400">
-                          {new Date(ev.ts).toLocaleTimeString()}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className="font-medium">{ev.userId}</span>
-                          <span className="ml-2 text-xs text-slate-400">
-                            {ev.roles.join(", ")}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 font-mono text-xs text-sky-300">
-                          {ev.tool}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span
-                            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${DECISION_BADGE[ev.decision] ??
-                              "bg-slate-700 text-slate-200 border-slate-600"
+                    events.map((ev) => {
+                      const isExpanded = expandedEventId === ev.id;
+                      return (
+                        <Fragment key={ev.id}>
+                          <tr
+                            onClick={() =>
+                              setExpandedEventId((prev) =>
+                                prev === ev.id ? null : ev.id
+                              )
+                            }
+                            className={`cursor-pointer transition ${isExpanded
+                              ? "bg-slate-800/70"
+                              : "hover:bg-slate-800/50"
                               }`}
                           >
-                            {ev.decision}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-xs text-slate-300">
-                          {ev.reasonCode}
-                        </td>
-                        <td className="px-4 py-2.5 text-xs text-amber-300">
-                          <div className="flex items-center gap-1.5">
-                            <span>
-                              {ev.findings.length > 0 ? ev.findings.length : "-"}
-                            </span>
-                            {ev.findings.some((f) => f.analyzer === "gemini") && (
-                              <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300 border border-indigo-500/30">
-                                Gemini
+                            <td className="whitespace-nowrap px-4 py-2.5 text-xs text-slate-400">
+                              <span className="mr-2 inline-block text-[10px] text-slate-500">
+                                {isExpanded ? "▼" : "▶"}
                               </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 text-xs text-slate-400">
-                          {ev.latencyMs}ms
-                        </td>
-                      </tr>
-                    ))
+                              {new Date(ev.ts).toLocaleTimeString()}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span className="font-medium">{ev.userId}</span>
+                              <span className="ml-2 text-xs text-slate-400">
+                                {ev.roles.join(", ")}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 font-mono text-xs text-sky-300">
+                              {ev.tool}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span
+                                className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${DECISION_BADGE[ev.decision] ??
+                                  "bg-slate-700 text-slate-200 border-slate-600"
+                                  }`}
+                              >
+                                {ev.decision}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 text-xs text-slate-300">
+                              {ev.reasonCode}
+                            </td>
+                            <td className="px-4 py-2.5 text-xs text-amber-300">
+                              <div className="flex items-center gap-1.5">
+                                <span>
+                                  {ev.findings.length > 0 ? ev.findings.length : "-"}
+                                </span>
+                                {ev.findings.some((f) => f.analyzer === "gemini") && (
+                                  <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300 border border-indigo-500/30">
+                                    Gemini
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-xs text-slate-400">
+                              {ev.latencyMs}ms
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-slate-900/90">
+                              <td colSpan={7} className="px-4 py-4 text-xs">
+                                <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+                                  <div className="mb-2 flex items-center justify-between">
+                                    <strong className="text-sm">
+                                      Event Detail ({ev.id})
+                                    </strong>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandedEventId(null);
+                                      }}
+                                      className="rounded border border-slate-700 px-2 py-0.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                                    >
+                                      Hide
+                                    </button>
+                                  </div>
+                                  {ev.findings.length > 0 && (
+                                    <div className="mb-3 space-y-2">
+                                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                                        Findings &amp; Gemini Analysis
+                                      </div>
+                                      {ev.findings.map((f, idx) => (
+                                        <div
+                                          key={`${f.detector}-${idx}`}
+                                          className="space-y-1 rounded-lg border border-slate-800 bg-slate-950 p-3"
+                                        >
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className="font-mono font-semibold text-indigo-300">
+                                              {f.analyzer ?? f.detector}
+                                            </span>
+                                            <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
+                                              action: {f.action}
+                                            </span>
+                                            {f.analysisStatus && (
+                                              <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-sky-300">
+                                                status: {f.analysisStatus}
+                                              </span>
+                                            )}
+                                            {f.riskLevel && (
+                                              <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300">
+                                                risk: {f.riskLevel}
+                                              </span>
+                                            )}
+                                            {typeof f.confidence === "number" && (
+                                              <span className="text-[11px] text-slate-400">
+                                                confidence: {(f.confidence * 100).toFixed(0)}%
+                                              </span>
+                                            )}
+                                            {f.recommendedAction && (
+                                              <span className="text-[11px] text-emerald-300">
+                                                recommended: {f.recommendedAction}
+                                              </span>
+                                            )}
+                                          </div>
+                                          {f.reason && (
+                                            <p className="text-slate-300">
+                                              Reason: {f.reason}
+                                            </p>
+                                          )}
+                                          {f.evidence && f.evidence.length > 0 && (
+                                            <p className="text-rose-300">
+                                              Evidence: {f.evidence.join(" | ")}
+                                            </p>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <pre className="overflow-x-auto rounded bg-slate-950 p-3 text-slate-300">
+                                    {JSON.stringify(ev, null, 2)}
+                                  </pre>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
             </div>
-
-            {selectedEvent && (
-              <div className="rounded-xl border border-slate-700 bg-slate-900 p-4 text-xs">
-                <div className="mb-2 flex items-center justify-between">
-                  <strong className="text-sm">Event Detail ({selectedEvent.id})</strong>
-                  <button
-                    onClick={() => setSelectedEvent(null)}
-                    className="text-slate-400 hover:text-white"
-                  >
-                    Close
-                  </button>
-                </div>
-                {selectedEvent.findings.length > 0 && (
-                  <div className="mb-3 space-y-2">
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                      Findings &amp; Gemini Analysis
-                    </div>
-                    {selectedEvent.findings.map((f, idx) => (
-                      <div
-                        key={`${f.detector}-${idx}`}
-                        className="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-1"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono font-semibold text-indigo-300">
-                            {f.analyzer ?? f.detector}
-                          </span>
-                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
-                            action: {f.action}
-                          </span>
-                          {f.analysisStatus && (
-                            <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-sky-300">
-                              status: {f.analysisStatus}
-                            </span>
-                          )}
-                          {f.riskLevel && (
-                            <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300">
-                              risk: {f.riskLevel}
-                            </span>
-                          )}
-                          {typeof f.confidence === "number" && (
-                            <span className="text-[11px] text-slate-400">
-                              confidence: {(f.confidence * 100).toFixed(0)}%
-                            </span>
-                          )}
-                          {f.recommendedAction && (
-                            <span className="text-[11px] text-emerald-300">
-                              recommended: {f.recommendedAction}
-                            </span>
-                          )}
-                        </div>
-                        {f.reason && (
-                          <p className="text-slate-300">Reason: {f.reason}</p>
-                        )}
-                        {f.evidence && f.evidence.length > 0 && (
-                          <p className="text-rose-300">
-                            Evidence: {f.evidence.join(" | ")}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <pre className="overflow-x-auto rounded bg-slate-950 p-3 text-slate-300">
-                  {JSON.stringify(selectedEvent, null, 2)}
-                </pre>
-              </div>
-            )}
           </section>
         )}
 
@@ -658,8 +682,8 @@ export default function App() {
                   </div>
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs ${u.connected
-                        ? "bg-emerald-500/15 text-emerald-300"
-                        : "bg-rose-500/15 text-rose-300"
+                      ? "bg-emerald-500/15 text-emerald-300"
+                      : "bg-rose-500/15 text-rose-300"
                       }`}
                   >
                     {u.connected ? "connected" : "disconnected"}

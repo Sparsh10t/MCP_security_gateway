@@ -1,5 +1,4 @@
-import crypto from "node:crypto";
-import jwt, { type JwtHeader, type JwtPayload } from "jsonwebtoken";
+import jwt, { type JwtPayload } from "jsonwebtoken";
 import { env } from "../config/env.js";
 import type { Identity } from "./identity.js";
 
@@ -15,56 +14,6 @@ export class AuthError extends Error {
   }
 }
 
-interface JwkCacheEntry {
-  keysByKid: Map<string, crypto.KeyObject>;
-  fetchedAtMs: number;
-}
-
-const JWKS_CACHE_TTL_MS = 5 * 60 * 1000;
-let jwksCache: JwkCacheEntry | null = null;
-
-async function fetchJwksKey(kid?: string): Promise<crypto.KeyObject> {
-  if (!env.JWT_JWKS_URI) {
-    throw new AuthError("invalid_token", "JWKS URI is not configured");
-  }
-
-  const now = Date.now();
-  if (!jwksCache || now - jwksCache.fetchedAtMs > JWKS_CACHE_TTL_MS) {
-    const response = await fetch(env.JWT_JWKS_URI);
-    if (!response.ok) {
-      throw new AuthError(
-        "invalid_token",
-        `Failed to fetch JWKS (${response.status})`
-      );
-    }
-    const body = (await response.json()) as {
-      keys?: Array<crypto.webcrypto.JsonWebKey & { kid?: string }>;
-    };
-    const keysByKid = new Map<string, crypto.KeyObject>();
-    for (const jwk of body.keys ?? []) {
-      if (jwk.kid) {
-        keysByKid.set(
-          jwk.kid,
-          crypto.createPublicKey({ key: jwk, format: "jwk" })
-        );
-      }
-    }
-    jwksCache = { keysByKid, fetchedAtMs: now };
-  }
-
-  if (kid) {
-    const matched = jwksCache.keysByKid.get(kid);
-    if (matched) return matched;
-  }
-
-  if (!kid && jwksCache.keysByKid.size === 1) {
-    const first = jwksCache.keysByKid.values().next().value;
-    if (first) return first;
-  }
-
-  throw new AuthError("invalid_token", "Signing key not found in JWKS");
-}
-
 function extractRoles(claims: JwtPayload): string[] {
   const roles = new Set<string>();
   const rawRoles = claims["roles"];
@@ -76,14 +25,6 @@ function extractRoles(claims: JwtPayload): string[] {
   const singleRole = claims["role"];
   if (typeof singleRole === "string" && singleRole.trim()) {
     roles.add(singleRole.trim());
-  }
-  const realmAccess = claims["realm_access"] as
-    | { roles?: unknown }
-    | undefined;
-  if (realmAccess && Array.isArray(realmAccess.roles)) {
-    for (const r of realmAccess.roles) {
-      if (typeof r === "string" && r.trim()) roles.add(r.trim());
-    }
   }
   return Array.from(roles);
 }
@@ -108,24 +49,10 @@ export async function verifyJwtToken(token: string): Promise<Identity> {
     throw new AuthError("missing_token", "Missing bearer token");
   }
 
-  const decodedComplete = jwt.decode(token, { complete: true });
-  if (!decodedComplete || typeof decodedComplete === "string") {
-    throw new AuthError("invalid_token", "Malformed JWT");
-  }
-
-  const header = decodedComplete.header as JwtHeader;
-  let verifyKey: string | crypto.KeyObject = env.JWT_SECRET;
-  let algorithms: jwt.Algorithm[] = ["HS256", "HS384", "HS512"];
-
-  if (env.JWT_JWKS_URI && header.alg && !header.alg.startsWith("HS")) {
-    verifyKey = await fetchJwksKey(header.kid);
-    algorithms = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"];
-  }
-
   let claims: JwtPayload;
   try {
-    const verified = jwt.verify(token, verifyKey, {
-      algorithms,
+    const verified = jwt.verify(token, env.JWT_SECRET, {
+      algorithms: ["HS256", "HS384", "HS512"],
       issuer: env.JWT_ISSUER,
       audience: env.JWT_AUDIENCE,
     });
@@ -149,26 +76,12 @@ export async function verifyJwtToken(token: string): Promise<Identity> {
     throw new AuthError("invalid_token", "JWT missing required 'exp' claim");
   }
 
-  const tenant =
-    typeof claims["tenant"] === "string"
-      ? claims["tenant"]
-      : typeof claims["org_id"] === "string"
-        ? claims["org_id"]
-        : "default";
-
-  const clientId =
-    typeof claims["azp"] === "string"
-      ? claims["azp"]
-      : typeof claims["client_id"] === "string"
-        ? claims["client_id"]
-        : claims.sub;
-
   return {
     userId: claims.sub,
     roles: extractRoles(claims),
-    tenant,
+    tenant: typeof claims["tenant"] === "string" ? claims["tenant"] : "default",
     scopes: extractScopes(claims),
-    clientId,
+    clientId: claims.sub,
     expiresAt: claims.exp,
     ...(typeof claims.jti === "string" ? { tokenId: claims.jti } : {}),
   };

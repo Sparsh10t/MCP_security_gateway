@@ -1,16 +1,12 @@
 import { Router } from "express";
 import type { UpstreamManager } from "../mcp/upstreamManager.js";
 import { pingPostgres } from "../services/postgres.js";
-import { pingRedis } from "../services/redis.js";
 
 export function createHealthRouter(upstreamManager: UpstreamManager): Router {
   const router = Router();
 
   router.get("/health", async (_req, res) => {
-    const [postgresOk, redisOk] = await Promise.all([
-      pingPostgres(),
-      pingRedis(),
-    ]);
+    const postgresOk = await pingPostgres();
     const upstreams = upstreamManager.getStatuses();
     const connectedUpstreams = upstreams.filter((u) => u.connected).length;
 
@@ -19,7 +15,6 @@ export function createHealthRouter(upstreamManager: UpstreamManager): Router {
       service: "mcp-security-gateway",
       infra: {
         postgres: postgresOk ? "connected" : "unavailable",
-        redis: redisOk ? "connected" : "unavailable",
       },
       upstreams: {
         total: upstreams.length,

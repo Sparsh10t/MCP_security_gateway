@@ -21,11 +21,9 @@ const envSchema = z.object({
     .default("dev-only-mcp-sentinel-secret-change-me"),
   JWT_ISSUER: z.string().default("mcp-sentinel-dev"),
   JWT_AUDIENCE: z.string().default("mcp-security-gateway"),
-  JWT_JWKS_URI: z.string().optional(),
   DATABASE_URL: z
     .string()
     .default("postgresql://mcp:mcp_secret@localhost:5432/mcp_gateway"),
-  REDIS_URL: z.string().default("redis://localhost:6379"),
   REQUIRE_INFRA: z
     .string()
     .optional()
