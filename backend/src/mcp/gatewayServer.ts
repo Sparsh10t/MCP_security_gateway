@@ -9,8 +9,8 @@ import type { AuditLogger } from "../audit/logger.js";
 import type { AuditEventInput } from "../audit/types.js";
 import { identityFromAuthInfo } from "../auth/identity.js";
 import { env } from "../config/env.js";
-import { applyResponseFilters } from "../filters/pipeline.js";
-import { inspectToolArguments } from "../inspect/requestInspector.js";
+import { applyResponseFiltersWithGemini } from "../filters/pipeline.js";
+import { inspectToolArgumentsWithGemini } from "../inspect/requestInspector.js";
 import type { PolicyEngine } from "../policy/evaluator.js";
 import type { InMemoryRateLimiter } from "../ratelimit/tokenBucket.js";
 import {
@@ -163,10 +163,11 @@ export function createGatewayServerFactory(
         );
       }
 
-      // 3. Request Inspector (scan arguments for embedded secrets)
-      const inspection = inspectToolArguments(args);
+      // 3. Request Inspector (scan arguments for embedded secrets & prompt injection)
+      const inspection = await inspectToolArgumentsWithGemini(name, args);
       if (!inspection.passed) {
         const latencyMs = Date.now() - startedAt;
+        const reasonCode = inspection.reasonCode ?? "SECRET_IN_ARGUMENTS";
         await persistAudit(auditLogger, {
           traceId,
           userId: identity.userId,
@@ -174,30 +175,24 @@ export function createGatewayServerFactory(
           tool: name,
           ...(args !== undefined ? { args } : {}),
           decision: "deny",
-          reasonCode: "SECRET_IN_ARGUMENTS",
-          findings: inspection.findings.map((f) => ({
-            detector: "secrets.v1",
-            category: "secret_in_arg",
-            severity: "critical",
-            action: "deny",
-            detail: `${f.arg}:${f.rule}`,
-          })),
+          reasonCode,
+          findings: inspection.findings,
           latencyMs,
         });
         console.warn(
-          `[gateway] tools/call ARG_VIOLATION user=${identity.userId} tool=${name} (${latencyMs}ms)`
+          `[gateway] tools/call ${reasonCode} user=${identity.userId} tool=${name} (${latencyMs}ms)`
         );
         throw new ProtocolError(
           POLICY_DENIED_RPC_CODE,
-          `ARG_VIOLATION: ${inspection.reason}`,
-          { traceId, reasonCode: "SECRET_IN_ARGUMENTS" }
+          `${reasonCode}: ${inspection.reason}`,
+          { traceId, reasonCode, findings: inspection.findings }
         );
       }
 
       // 4. Forward to Upstream + Apply Response Filters
       try {
         const { result, entry } = await upstreamManager.callTool(name, args);
-        const filtered = applyResponseFilters(
+        const filtered = await applyResponseFiltersWithGemini(
           name,
           result,
           policyEngine.getResponseFilters()
@@ -226,6 +221,10 @@ export function createGatewayServerFactory(
           );
         }
 
+        const hasActionableFinding = filtered.findings.some(
+          (f) => f.action !== "allow" && f.action !== "fallback_deterministic"
+        );
+
         await persistAudit(auditLogger, {
           traceId,
           userId: identity.userId,
@@ -235,7 +234,7 @@ export function createGatewayServerFactory(
           decision: filtered.redacted ? "allow_redacted" : "allow",
           reasonCode: result.isError
             ? "UPSTREAM_TOOL_ERROR"
-            : filtered.findings.length > 0
+            : hasActionableFinding
               ? "ALLOWED_WITH_FINDINGS"
               : "ALLOWED",
           findings: filtered.findings,

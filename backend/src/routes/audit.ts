@@ -61,7 +61,9 @@ export function createAuditRouter(auditLogger: AuditLogger): Router {
       for (const ev of events) {
         byDecision[ev.decision] = (byDecision[ev.decision] ?? 0) + 1;
         byTool[ev.tool] = (byTool[ev.tool] ?? 0) + 1;
-        totalFindings += ev.findings.length;
+        totalFindings += ev.findings.filter(
+          (f) => f.action !== "allow" && f.action !== "fallback_deterministic"
+        ).length;
       }
 
       res.json({

@@ -15,10 +15,18 @@ import {
 
 interface AuditFinding {
   detector: string;
+  analyzer?: string;
   category: string;
   severity: string;
   action: string;
   detail?: string;
+  analysisStatus?: string;
+  injectionDetected?: boolean | null;
+  riskLevel?: string;
+  confidence?: number;
+  reason?: string;
+  evidence?: string[];
+  recommendedAction?: string;
 }
 
 interface AuditEvent {
@@ -240,11 +248,10 @@ export default function App() {
               Tools: {health?.upstreams.tools ?? 0}
             </span>
             <span
-              className={`rounded-full border px-3 py-1 ${
-                health?.infra.postgres === "connected"
+              className={`rounded-full border px-3 py-1 ${health?.infra.postgres === "connected"
                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
                   : "border-amber-500/40 bg-amber-500/10 text-amber-300"
-              }`}
+                }`}
             >
               Postgres: {health?.infra.postgres ?? "unknown"}
             </span>
@@ -341,11 +348,10 @@ export default function App() {
               <button
                 key={key}
                 onClick={() => setTab(key)}
-                className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-                  tab === key
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition ${tab === key
                     ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
                     : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                }`}
+                  }`}
               >
                 {label}
               </button>
@@ -379,11 +385,10 @@ export default function App() {
 
         {verification && (
           <div
-            className={`rounded-xl border p-4 text-sm ${
-              verification.valid
+            className={`rounded-xl border p-4 text-sm ${verification.valid
                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
                 : "border-rose-500/40 bg-rose-500/10 text-rose-200"
-            }`}
+              }`}
           >
             {verification.valid ? (
               <span>
@@ -473,10 +478,9 @@ export default function App() {
                         </td>
                         <td className="px-4 py-2.5">
                           <span
-                            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${
-                              DECISION_BADGE[ev.decision] ??
+                            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${DECISION_BADGE[ev.decision] ??
                               "bg-slate-700 text-slate-200 border-slate-600"
-                            }`}
+                              }`}
                           >
                             {ev.decision}
                           </span>
@@ -485,7 +489,16 @@ export default function App() {
                           {ev.reasonCode}
                         </td>
                         <td className="px-4 py-2.5 text-xs text-amber-300">
-                          {ev.findings.length > 0 ? ev.findings.length : "-"}
+                          <div className="flex items-center gap-1.5">
+                            <span>
+                              {ev.findings.length > 0 ? ev.findings.length : "-"}
+                            </span>
+                            {ev.findings.some((f) => f.analyzer === "gemini") && (
+                              <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300 border border-indigo-500/30">
+                                Gemini
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-2.5 text-xs text-slate-400">
                           {ev.latencyMs}ms
@@ -508,6 +521,56 @@ export default function App() {
                     Close
                   </button>
                 </div>
+                {selectedEvent.findings.length > 0 && (
+                  <div className="mb-3 space-y-2">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                      Findings &amp; Gemini Analysis
+                    </div>
+                    {selectedEvent.findings.map((f, idx) => (
+                      <div
+                        key={`${f.detector}-${idx}`}
+                        className="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-1"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono font-semibold text-indigo-300">
+                            {f.analyzer ?? f.detector}
+                          </span>
+                          <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
+                            action: {f.action}
+                          </span>
+                          {f.analysisStatus && (
+                            <span className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-sky-300">
+                              status: {f.analysisStatus}
+                            </span>
+                          )}
+                          {f.riskLevel && (
+                            <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-300">
+                              risk: {f.riskLevel}
+                            </span>
+                          )}
+                          {typeof f.confidence === "number" && (
+                            <span className="text-[11px] text-slate-400">
+                              confidence: {(f.confidence * 100).toFixed(0)}%
+                            </span>
+                          )}
+                          {f.recommendedAction && (
+                            <span className="text-[11px] text-emerald-300">
+                              recommended: {f.recommendedAction}
+                            </span>
+                          )}
+                        </div>
+                        {f.reason && (
+                          <p className="text-slate-300">Reason: {f.reason}</p>
+                        )}
+                        {f.evidence && f.evidence.length > 0 && (
+                          <p className="text-rose-300">
+                            Evidence: {f.evidence.join(" | ")}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <pre className="overflow-x-auto rounded bg-slate-950 p-3 text-slate-300">
                   {JSON.stringify(selectedEvent, null, 2)}
                 </pre>
@@ -594,11 +657,10 @@ export default function App() {
                     <h3 className="font-semibold">{u.name}</h3>
                   </div>
                   <span
-                    className={`rounded-full px-2.5 py-0.5 text-xs ${
-                      u.connected
+                    className={`rounded-full px-2.5 py-0.5 text-xs ${u.connected
                         ? "bg-emerald-500/15 text-emerald-300"
                         : "bg-rose-500/15 text-rose-300"
-                    }`}
+                      }`}
                   >
                     {u.connected ? "connected" : "disconnected"}
                   </span>

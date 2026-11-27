@@ -7,6 +7,9 @@ const envSchema = z.object({
   UPSTREAM_CONFIG_PATH: z.string().default("./config/upstreams.yaml"),
   UPSTREAM_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   POLICY_PATH: z.string().default("./policies/policy.yaml"),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default("gemini-3.6-flash"),
+  GEMINI_TIMEOUT_MS: z.coerce.number().int().min(10000).default(15000),
   AUDIT_LOG_PATH: z.string().default("./data/audit-events.jsonl"),
   AUDIT_FAIL_CLOSED: z
     .string()

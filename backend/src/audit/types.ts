@@ -10,10 +10,18 @@ export type AuditDecision =
 
 export interface AuditFinding {
   detector: string;
+  analyzer?: string;
   category: string;
   severity: "low" | "medium" | "high" | "critical";
   action: string;
   detail?: string;
+  analysisStatus?: string;
+  injectionDetected?: boolean | null;
+  riskLevel?: string;
+  confidence?: number;
+  reason?: string;
+  evidence?: string[];
+  recommendedAction?: string;
 }
 
 export interface AuditEventPayload {

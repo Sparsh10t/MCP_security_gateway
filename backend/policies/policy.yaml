@@ -45,6 +45,6 @@ response_filters:
   default:
     pii: mask
     secrets: redact
-    injection: flag
+    injection: block
   jira.*:
-    injection: redact
+    injection: block

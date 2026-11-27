@@ -1,5 +1,6 @@
 # Personal study / guide file (excluded from git)
 PROJECT_GUIDE.md
+PROJECT_GUIDE.txt
 
 # Dependencies & builds
 node_modules/

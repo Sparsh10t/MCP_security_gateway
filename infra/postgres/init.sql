@@ -1,4 +1,3 @@
--- Core schema aligned with Design Report Section 9.1
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS upstream_servers (
